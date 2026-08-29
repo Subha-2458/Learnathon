@@ -12,6 +12,7 @@ coverage/
 .freebuff
 # Output
 .output
+.vscode
 .vercel
 .netlify
 .wrangler
