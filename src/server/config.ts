@@ -17,6 +17,16 @@ export const SESSION_COOKIE = 'hg_session';
 
 export const SESSION_TTL_SECONDS = 60 * 60 * 24 * 7;
 
+/**
+ * `Secure` on the session cookie is required wherever the app is served over
+ * HTTPS, but must stay off for the plain-HTTP localhost dev server, which would
+ * otherwise drop the cookie entirely. Defaults by NODE_ENV; set
+ * HOSTEL_COOKIE_SECURE=true/false to override for other deployment models.
+ */
+export const SESSION_COOKIE_SECURE = process.env.HOSTEL_COOKIE_SECURE
+	? process.env.HOSTEL_COOKIE_SECURE === 'true'
+	: process.env.NODE_ENV === 'production';
+
 export const MAX_ATTACHMENT_BYTES = 2 * 1024 * 1024;
 
 export const ALLOWED_ATTACHMENT_TYPES = new Set([

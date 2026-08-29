@@ -3,6 +3,7 @@ import type { AppEnv } from '../env.ts';
 import { requireUser } from '../auth/session.ts';
 import {
 	assembleGrievance,
+	assertCanViewGrievance,
 	findUserById,
 	listAllGrievanceRows,
 	listCommentRows,
@@ -13,7 +14,7 @@ import {
 	requireGrievance,
 	touchGrievance
 } from '../db/queries.ts';
-import type { CommentRow, AttachmentRow, GrievanceStatusDb } from '../types/index.ts';
+import type { CommentRow, AttachmentRow } from '../types/index.ts';
 import { toPublicAttachment, toPublicComment, toPublicUser } from '../db/map.ts';
 import { HttpError } from '../http/errors.ts';
 import { parseCategory, statusToDb } from '../http/status.ts';
@@ -120,8 +121,9 @@ grievanceRoutes.post('/', async (c) => {
 
 grievanceRoutes.get('/:id/comments', (c) => {
 	const db = c.get('db');
-	requireUser(c, db);
+	const user = requireUser(c, db);
 	const row = requireGrievance(db, c.req.param('id'));
+	assertCanViewGrievance(user, row);
 	const comments = listCommentRows(db, row.id).map((comment) => {
 		const authorRow = findUserById(db, comment.author_id);
 		if (!authorRow) {
@@ -136,6 +138,7 @@ grievanceRoutes.post('/:id/comments', async (c) => {
 	const db = c.get('db');
 	const user = requireUser(c, db);
 	const row = requireGrievance(db, c.req.param('id'));
+	assertCanViewGrievance(user, row);
 
 	let body: unknown;
 	try {
@@ -184,7 +187,7 @@ grievanceRoutes.post('/:id/attachments', async (c) => {
 	}
 
 	const bytes = await bufferFromUpload(upload);
-	const stored = newStoredName(upload.type, upload.name);
+	const stored = newStoredName(upload.type);
 	const ts = nowIso();
 	writeStoredFile(c.get('uploadsDir'), stored, bytes);
 	const id = nextAttachmentId(db);
@@ -199,8 +202,9 @@ grievanceRoutes.post('/:id/attachments', async (c) => {
 
 grievanceRoutes.get('/:id', (c) => {
 	const db = c.get('db');
-	requireUser(c, db);
+	const user = requireUser(c, db);
 	const row = requireGrievance(db, c.req.param('id'));
+	assertCanViewGrievance(user, row);
 	return c.json({ data: assembleGrievance(db, row) });
 });
 
@@ -208,6 +212,7 @@ grievanceRoutes.patch('/:id', async (c) => {
 	const db = c.get('db');
 	const user = requireUser(c, db);
 	const row = requireGrievance(db, c.req.param('id'));
+	assertCanViewGrievance(user, row);
 
 	let body: unknown;
 	try {
@@ -232,13 +237,22 @@ grievanceRoutes.patch('/:id', async (c) => {
 
 	switch (user.role) {
 		case 'student': {
+			// Status transitions are the warden's alone. Checked before the resolved
+			// check so an unauthorised field is rejected on its own merits rather
+			// than depending on the grievance's current state.
+			if (wantsStatus) {
+				throw new HttpError(
+					403,
+					'unauthorized',
+					'Only the warden can change the status of a grievance.'
+				);
+			}
 			if (row.status === 'resolved') {
 				throw new HttpError(409, 'conflict', 'Resolved grievances cannot be edited.');
 			}
 			let nextTitle = row.title;
 			let nextDescription = row.description;
 			let nextCategory = row.category;
-			let nextStatus: GrievanceStatusDb = row.status;
 			if (title !== undefined) {
 				if (typeof title !== 'string' || title.trim().length < 5) {
 					throw new HttpError(400, 'bad_request', 'Title must be at least 5 characters.');
@@ -257,16 +271,10 @@ grievanceRoutes.patch('/:id', async (c) => {
 				}
 				nextCategory = parseCategory(category);
 			}
-			if (status !== undefined) {
-				if (typeof status !== 'string') {
-					throw new HttpError(400, 'bad_request', 'Invalid grievance status.');
-				}
-				nextStatus = statusToDb(status);
-			}
 			const ts = nowIso();
 			db.prepare(
-				'UPDATE grievances SET title = ?, description = ?, category = ?, status = ?, updated_at = ? WHERE id = ?'
-			).run(nextTitle, nextDescription, nextCategory, nextStatus, ts, row.id);
+				'UPDATE grievances SET title = ?, description = ?, category = ?, updated_at = ? WHERE id = ?'
+			).run(nextTitle, nextDescription, nextCategory, ts, row.id);
 			break;
 		}
 		case 'warden': {

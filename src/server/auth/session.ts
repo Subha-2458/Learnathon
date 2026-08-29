@@ -2,7 +2,7 @@ import { randomBytes } from 'node:crypto';
 import type { Database } from 'better-sqlite3';
 import type { Context } from 'hono';
 import { deleteCookie, getCookie, setCookie } from 'hono/cookie';
-import { SESSION_COOKIE, SESSION_TTL_SECONDS } from '../config.ts';
+import { SESSION_COOKIE, SESSION_COOKIE_SECURE, SESSION_TTL_SECONDS } from '../config.ts';
 import { HttpError } from '../http/errors.ts';
 import type { SessionUser } from '../types/index.ts';
 
@@ -36,6 +36,12 @@ export function readSessionUser(db: Database, token: string): SessionUser | unde
 		)
 		.get(token) as (SessionUser & { expires_at: string }) | undefined;
 	if (!row) return undefined;
+	// The stored expiry is the authority on session lifetime. A missing or
+	// unparseable expiry counts as expired rather than as "never expires".
+	const expiresAt = Date.parse(row.expires_at ?? '');
+	if (!Number.isFinite(expiresAt) || expiresAt <= Date.now()) {
+		return undefined;
+	}
 	return {
 		id: row.id,
 		name: row.name,
@@ -49,12 +55,25 @@ export function readSessionUser(db: Database, token: string): SessionUser | unde
 export function setSessionCookie(c: Context, token: string): void {
 	setCookie(c, SESSION_COOKIE, token, {
 		path: '/',
-		maxAge: SESSION_TTL_SECONDS
+		maxAge: SESSION_TTL_SECONDS,
+		// Keeps the token out of reach of page scripts.
+		httpOnly: true,
+		// 'Lax' stops cross-site requests from carrying the session while still
+		// allowing normal top-level navigation into the app.
+		sameSite: 'Lax',
+		secure: SESSION_COOKIE_SECURE
 	});
 }
 
 export function clearSessionCookie(c: Context): void {
-	deleteCookie(c, SESSION_COOKIE, { path: '/' });
+	// The attributes have to match the cookie that was set, or the browser keeps
+	// the old one.
+	deleteCookie(c, SESSION_COOKIE, {
+		path: '/',
+		httpOnly: true,
+		sameSite: 'Lax',
+		secure: SESSION_COOKIE_SECURE
+	});
 }
 
 export function requireUser(c: Context, db: Database): SessionUser {

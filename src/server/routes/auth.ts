@@ -1,6 +1,13 @@
 import { Hono } from 'hono';
 import type { AppEnv } from '../env.ts';
-import { createSession, clearSessionCookie, requireUser, setSessionCookie } from '../auth/session.ts';
+import {
+	createSession,
+	clearSessionCookie,
+	destroySession,
+	optionalToken,
+	requireUser,
+	setSessionCookie
+} from '../auth/session.ts';
 import { verifyPassword } from '../auth/passwords.ts';
 import { findUserByEmail } from '../db/queries.ts';
 import { toPublicUser } from '../db/map.ts';
@@ -34,6 +41,12 @@ authRoutes.post('/login', async (c) => {
 });
 
 authRoutes.post('/logout', (c) => {
+	const token = optionalToken(c);
+	if (token) {
+		// Clearing the cookie alone leaves the session usable by anyone who still
+		// holds the token, so the server-side record has to go too.
+		destroySession(c.get('db'), token);
+	}
 	clearSessionCookie(c);
 	return c.json({ ok: true });
 });

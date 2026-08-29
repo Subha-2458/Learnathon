@@ -46,7 +46,7 @@
 						<span class="text-muted-foreground text-xs capitalize">{comment.author.role}</span>
 						<span class="text-muted-foreground text-xs">· {formatTimestamp(comment.createdAt)}</span>
 					</div>
-						<p class="mt-1 text-sm whitespace-pre-line">{@html comment.body}</p>
+						<p class="mt-1 text-sm whitespace-pre-line">{comment.body}</p>
 				</div>
 			</li>
 		{/each}

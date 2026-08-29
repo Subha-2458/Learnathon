@@ -32,8 +32,34 @@ export function extensionForMime(mime: string): string {
 	return MIME_EXTENSION[mime] ?? '.bin';
 }
 
-export function newStoredName(mime: string, originalName?: string): string {
-	return originalName ?? `${randomBytes(16).toString('hex')}${extensionForMime(mime)}`;
+/**
+ * Stored names are always server-generated. The uploader's filename is kept
+ * separately as `original_filename` for display and never used as a path.
+ */
+export function newStoredName(mime: string): string {
+	return `${randomBytes(16).toString('hex')}${extensionForMime(mime)}`;
+}
+
+/**
+ * Resolve a stored attachment name to an absolute path that is guaranteed to
+ * sit directly inside `uploadsDir`. Returns undefined when the name is not a
+ * plain filename or escapes the directory; callers map that to their own error.
+ */
+function resolveInsideUploads(uploadsDir: string, storedName: string): string | undefined {
+	if (
+		!storedName ||
+		storedName.includes('/') ||
+		storedName.includes('\\') ||
+		storedName.includes('..')
+	) {
+		return undefined;
+	}
+	const root = resolve(uploadsDir);
+	const full = resolve(join(uploadsDir, storedName));
+	if (full === root || !full.startsWith(root + sep)) {
+		return undefined;
+	}
+	return full;
 }
 
 export function assertPermittedAttachment(mime: string, size: number): void {
@@ -56,19 +82,18 @@ export async function bufferFromUpload(file: File): Promise<Buffer> {
 
 export function writeStoredFile(uploadsDir: string, storedName: string, bytes: Buffer): void {
 	ensureUploadsDir(uploadsDir);
-	writeFileSync(join(uploadsDir, storedName), bytes);
+	const full = resolveInsideUploads(uploadsDir, storedName);
+	if (!full) {
+		throw new HttpError(400, 'bad_request', 'Attachment could not be stored.');
+	}
+	// 'wx' fails instead of overwriting, so a stored name can never clobber an
+	// existing file.
+	writeFileSync(full, bytes, { flag: 'wx' });
 }
 
 export function readStoredFile(uploadsDir: string, storedName: string): Buffer {
-	if (storedName.includes('/') || storedName.includes('\\') || storedName.includes('..')) {
-		throw new HttpError(404, 'not_found', 'Attachment file was not found.');
-	}
-	const root = resolve(uploadsDir);
-	const full = resolve(join(uploadsDir, storedName));
-	if (full !== root && !full.startsWith(root + sep)) {
-		throw new HttpError(404, 'not_found', 'Attachment file was not found.');
-	}
-	if (!existsSync(full)) {
+	const full = resolveInsideUploads(uploadsDir, storedName);
+	if (!full || !existsSync(full)) {
 		throw new HttpError(404, 'not_found', 'Attachment file was not found.');
 	}
 	return readFileSync(full);
