@@ -20,6 +20,7 @@ import { toPublicAttachment, toPublicComment, toPublicUser } from '../db/map.ts'
 import { HttpError } from '../http/errors.ts';
 import { audit } from '../http/audit.ts';
 import { parseCategory, statusToDb, assertValidTransition } from '../http/status.ts';
+import { RateLimiter } from '../http/rate-limit.ts';
 import {
 	bufferFromUpload,
 	newStoredName,
@@ -39,6 +40,15 @@ export const grievanceRoutes = new Hono<AppEnv>();
 
 const DEFAULT_PAGE_LIMIT = 20;
 const MAX_PAGE_LIMIT = 100;
+
+// Rate limiters for mutating endpoints (per IP)
+const grievanceCreateLimiter = new RateLimiter({ max: 10, windowMs: 60 * 60 * 1000 });
+const commentLimiter = new RateLimiter({ max: 20, windowMs: 60 * 60 * 1000 });
+const attachmentLimiter = new RateLimiter({ max: 20, windowMs: 60 * 60 * 1000 });
+
+function clientIp(c: { req: { header(name: string): string | undefined } }): string {
+	return c.req.header('x-forwarded-for')?.split(',')[0]?.trim() ?? '127.0.0.1';
+}
 
 grievanceRoutes.get('/', (c) => {
 	const db = c.get('db');
@@ -69,6 +79,12 @@ grievanceRoutes.post('/', async (c) => {
 	const user = requireUser(c, db);
 	if (user.role !== 'student') {
 		throw new HttpError(403, 'unauthorized', 'Only students can file grievances.');
+	}
+
+	const ip = clientIp(c);
+	const check = grievanceCreateLimiter.touch(ip);
+	if (check.limited) {
+		throw new HttpError(429, 'too_many_requests', 'Too many requests. Please try again later.');
 	}
 
 	const contentType = c.req.header('content-type') ?? '';
@@ -184,8 +200,7 @@ grievanceRoutes.get('/:id/comments', (c) => {
 grievanceRoutes.post('/:id/comments', async (c) => {
 	const db = c.get('db');
 	const user = requireUser(c, db);
-	const row = requireGrievance(db, c.req.param('id'));
-	assertCanViewGrievance(user, row);
+	const paramId = c.req.param('id');
 
 	let body: unknown;
 	try {
@@ -193,6 +208,22 @@ grievanceRoutes.post('/:id/comments', async (c) => {
 	} catch {
 		throw new HttpError(400, 'bad_request', 'JSON body is required.');
 	}
+
+	// Re-read AFTER async body parsing to prevent TOCTOU race condition.
+	const row = requireGrievance(db, paramId);
+	assertCanViewGrievance(user, row);
+
+	// Students cannot comment on resolved grievances (consistent with PATCH and attachment rules).
+	if (user.role === 'student' && row.status === 'resolved') {
+		throw new HttpError(409, 'conflict', 'Resolved grievances cannot be edited.');
+	}
+
+	const ip = clientIp(c);
+	const rateCheck = commentLimiter.touch(ip);
+	if (rateCheck.limited) {
+		throw new HttpError(429, 'too_many_requests', 'Too many requests. Please try again later.');
+	}
+
 	const text =
 		body && typeof body === 'object' && 'body' in body && typeof body.body === 'string'
 			? body.body.trim()
@@ -230,6 +261,12 @@ grievanceRoutes.post('/:id/attachments', async (c) => {
 		throw new HttpError(409, 'conflict', 'Resolved grievances cannot be edited.');
 	}
 
+	const ip = clientIp(c);
+	const attCheck = attachmentLimiter.touch(ip);
+	if (attCheck.limited) {
+		throw new HttpError(429, 'too_many_requests', 'Too many requests. Please try again later.');
+	}
+
 	const body = await c.req.parseBody();
 	const upload = body.file instanceof File ? body.file : body.attachment instanceof File ? body.attachment : undefined;
 	if (!upload) {
@@ -239,12 +276,22 @@ grievanceRoutes.post('/:id/attachments', async (c) => {
 	const bytes = await bufferFromUpload(upload);
 	const stored = newStoredName(upload.type);
 	const ts = nowIso();
-	writeStoredFile(c.get('uploadsDir'), stored, bytes);
+
+	// Insert DB record FIRST, then write file. If file write fails,
+	// clean up the DB record to prevent orphaned files.
 	const id = nextAttachmentId(db);
 	db.prepare(
 		`INSERT INTO attachments (id, grievance_id, original_filename, stored_filename, mime_type, size_bytes, created_at)
      VALUES (?, ?, ?, ?, ?, ?, ?)`
 	).run(id, row.id, originalBasename(upload.name), stored, upload.type, bytes.byteLength, ts);
+
+	try {
+		writeStoredFile(c.get('uploadsDir'), stored, bytes);
+	} catch (fileErr) {
+		db.prepare('DELETE FROM attachments WHERE id = ?').run(id);
+		throw fileErr;
+	}
+
 	touchGrievance(db, row.id, ts);
 	const saved = db.prepare('SELECT * FROM attachments WHERE id = ?').get(id) as AttachmentRow;
 	return c.json({ data: toPublicAttachment(saved) }, 201);
@@ -261,8 +308,7 @@ grievanceRoutes.get('/:id', (c) => {
 grievanceRoutes.patch('/:id', async (c) => {
 	const db = c.get('db');
 	const user = requireUser(c, db);
-	const row = requireGrievance(db, c.req.param('id'));
-	assertCanViewGrievance(user, row);
+	const paramId = c.req.param('id');
 
 	let body: unknown;
 	try {
@@ -273,6 +319,10 @@ grievanceRoutes.patch('/:id', async (c) => {
 	if (!body || typeof body !== 'object') {
 		throw new HttpError(400, 'bad_request', 'Request body must be JSON.');
 	}
+
+	// Re-read AFTER async body parsing to prevent TOCTOU race condition.
+	const row = requireGrievance(db, paramId);
+	assertCanViewGrievance(user, row);
 
 	const title = 'title' in body ? body.title : undefined;
 	const description = 'description' in body ? body.description : undefined;

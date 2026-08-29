@@ -91,7 +91,8 @@ export function assertCanViewGrievance(user: SessionUser, row: GrievanceRow): vo
 			return;
 		case 'student':
 			if (row.student_id !== user.id) {
-				throw new HttpError(403, 'unauthorized', 'You cannot access this grievance.');
+				// Return 404 instead of 403 to prevent resource enumeration.
+				throw new HttpError(404, 'not_found', 'Grievance was not found.');
 			}
 			return;
 		default: {
@@ -103,14 +104,12 @@ export function assertCanViewGrievance(user: SessionUser, row: GrievanceRow): vo
 }
 
 function nextPrefixedId(db: Database, table: 'grievances' | 'comments' | 'attachments', prefix: string): string {
-	const rows = db.prepare(`SELECT id FROM ${table}`).all() as { id: string }[];
-	let max = 0;
-	for (const row of rows) {
-		if (!row.id.startsWith(prefix)) continue;
-		const n = Number.parseInt(row.id.slice(prefix.length), 10);
-		if (!Number.isNaN(n) && n > max) max = n;
-	}
-	return `${prefix}${String(max + 1).padStart(prefix === 'GRV-' ? 4 : 0, '0')}`;
+	const pad = prefix === 'GRV-' ? 4 : 0;
+	const row = db
+		.prepare(`SELECT MAX(CAST(SUBSTR(id, ${prefix.length + 1}) AS INTEGER)) AS m FROM ${table} WHERE id LIKE '${prefix}%'`)
+		.get() as { m: number | null } | undefined;
+	const max = row?.m ?? 0;
+	return `${prefix}${String(max + 1).padStart(pad, '0')}`;
 }
 
 export function nextGrievanceId(db: Database): string {
@@ -118,26 +117,18 @@ export function nextGrievanceId(db: Database): string {
 }
 
 export function nextCommentId(db: Database): string {
-	const rows = db.prepare('SELECT id FROM comments').all() as { id: string }[];
-	let max = 0;
-	for (const row of rows) {
-		const match = /^cmt-(\d+)$/.exec(row.id);
-		if (!match) continue;
-		const n = Number.parseInt(match[1], 10);
-		if (n > max) max = n;
-	}
+	const row = db
+		.prepare(`SELECT MAX(CAST(SUBSTR(id, 5) AS INTEGER)) AS m FROM comments WHERE id LIKE 'cmt-%'`)
+		.get() as { m: number | null } | undefined;
+	const max = row?.m ?? 0;
 	return `cmt-${max + 1}`;
 }
 
 export function nextAttachmentId(db: Database): string {
-	const rows = db.prepare('SELECT id FROM attachments').all() as { id: string }[];
-	let max = 0;
-	for (const row of rows) {
-		const match = /^att-(\d+)$/.exec(row.id);
-		if (!match) continue;
-		const n = Number.parseInt(match[1], 10);
-		if (n > max) max = n;
-	}
+	const row = db
+		.prepare(`SELECT MAX(CAST(SUBSTR(id, 5) AS INTEGER)) AS m FROM attachments WHERE id LIKE 'att-%'`)
+		.get() as { m: number | null } | undefined;
+	const max = row?.m ?? 0;
 	return `att-${max + 1}`;
 }
 

@@ -9,6 +9,8 @@ import { cors } from 'hono/cors';
 import { CORS_ORIGINS } from './config.ts';
 import { securityHeaders } from './http/security-headers.ts';
 
+const MAX_REQUEST_BODY_BYTES = 5 * 1024 * 1024; // 5MB
+
 export type CreateAppOptions = {
 	db: Database;
 	uploadsDir: string;
@@ -34,6 +36,15 @@ export function createApp(options: CreateAppOptions) {
 	})
 );
 	app.use('/api/*', securityHeaders);
+
+	// Reject requests with oversized bodies to prevent memory exhaustion.
+	app.use('/api/*', async (c, next) => {
+		const cl = Number(c.req.header('content-length') ?? '0');
+		if (cl > MAX_REQUEST_BODY_BYTES) {
+			throw new HttpError(413, 'bad_request', 'Request body too large.');
+		}
+		await next();
+	});
 
 	app.onError((err, c) => handleError(err, c));
 

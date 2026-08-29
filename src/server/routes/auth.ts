@@ -50,13 +50,12 @@ authRoutes.post('/login', async (c) => {
 		throw new HttpError(400, 'bad_request', 'Email and password are required.');
 	}
 	const user = findUserByEmail(db, email);
-	if (!user) {
+	// Always run verifyPassword to prevent timing-based user enumeration.
+	// For non-existent emails, use a dummy hash so scrypt still runs.
+	const dummyHash = 'scrypt:00000000000000000000000000000000:00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000';
+	const result = verifyPassword(password, user ? user.password_hash : dummyHash);
+	if (!user || !result.ok) {
 		audit({ ts: new Date().toISOString(), event: 'login_failure', ip, detail: email });
-		throw new HttpError(401, 'unauthenticated', 'Invalid email or password.');
-	}
-	const result = verifyPassword(password, user.password_hash);
-	if (!result.ok) {
-		audit({ ts: new Date().toISOString(), event: 'login_failure', userId: user.id, ip, detail: email });
 		throw new HttpError(401, 'unauthenticated', 'Invalid email or password.');
 	}
 	// Successful login — reset the rate limiter for this IP.
@@ -67,6 +66,11 @@ authRoutes.post('/login', async (c) => {
 		const freshHash = hashPassword(password);
 		db.prepare('UPDATE users SET password_hash = ? WHERE id = ?').run(freshHash, user.id);
 	}
+	// Invalidate all existing sessions for this user to prevent session
+	// accumulation and ensure a compromised token cannot be reused.
+	db.prepare('DELETE FROM sessions WHERE user_id = ?').run(user.id);
+	// Also clean up expired sessions for all users to prevent table bloat.
+	db.prepare('DELETE FROM sessions WHERE expires_at < ?').run(new Date().toISOString());
 	const token = createSession(db, user.id);
 	setSessionCookie(c, token);
 	return c.json({ user: toPublicUser(user) });

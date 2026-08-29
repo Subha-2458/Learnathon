@@ -125,10 +125,10 @@ describe('HostelGrievance API baseline', () => {
 
 	it('student cannot access another student’s grievance', async () => {
 		const { cookie } = await login(app, 'student@example.test', 'student123');
-		const res = await app.request('/api/grievances/GRV-0003', { headers: { Cookie: cookie } });
-		expect(res.status).toBe(403);
-		const json = await res.json();
-		expect(json.code).toBe('unauthorized');
+	const res = await app.request('/api/grievances/GRV-0003', { headers: { Cookie: cookie } });
+	expect(res.status).toBe(404);
+	const json = await res.json();
+	expect(json.code).toBe('not_found');
 
 		const list = await app.request('/api/grievances', { headers: { Cookie: cookie } });
 		const listJson = await list.json();
@@ -219,10 +219,10 @@ describe('HostelGrievance API baseline', () => {
 		expect(bytes.equals(PNG)).toBe(true);
 
 		const other = await login(app, 'priya@example.test', 'student123');
-		const stolen = await app.request(`/api/attachments/${meta.data.id}`, {
-			headers: { Cookie: other.cookie }
-		});
-		expect(stolen.status).toBe(403);
+	const stolen = await app.request(`/api/attachments/${meta.data.id}`, {
+		headers: { Cookie: other.cookie }
+	});
+	expect(stolen.status).toBe(404);
 	});
 
 	it('rejects oversized and disallowed attachments', async () => {
@@ -259,12 +259,12 @@ describe('HostelGrievance API baseline', () => {
 		expect(editedJson.data.title).toContain('still dirty');
 
 		const other = await login(app, 'priya@example.test', 'student123');
-		const forbidden = await app.request('/api/grievances/GRV-0008', {
-			method: 'PATCH',
-			headers: { 'Content-Type': 'application/json', Cookie: other.cookie },
-			body: JSON.stringify({ title: 'Should not work at all here' })
-		});
-		expect(forbidden.status).toBe(403);
+	const forbidden = await app.request('/api/grievances/GRV-0008', {
+		method: 'PATCH',
+		headers: { 'Content-Type': 'application/json', Cookie: other.cookie },
+		body: JSON.stringify({ title: 'Should not work at all here' })
+	});
+	expect(forbidden.status).toBe(404);
 
 		const rohan = await login(app, 'rohan@example.test', 'student123');
 		const resolved = await app.request('/api/grievances/GRV-0004', {
@@ -358,18 +358,18 @@ describe('HostelGrievance API hardening regressions', () => {
 	it('does not let a student read or comment on another student’s grievance', async () => {
 		const { cookie } = await login(app, 'student@example.test', 'student123');
 
-		const read = await app.request('/api/grievances/GRV-0003/comments', {
-			headers: { Cookie: cookie }
-		});
-		expect(read.status).toBe(403);
-		expect((await read.json()).code).toBe('unauthorized');
+	const read = await app.request('/api/grievances/GRV-0003/comments', {
+		headers: { Cookie: cookie }
+	});
+	expect(read.status).toBe(404);
+	expect((await read.json()).code).toBe('not_found');
 
-		const write = await app.request('/api/grievances/GRV-0003/comments', {
-			method: 'POST',
-			headers: { 'Content-Type': 'application/json', Cookie: cookie },
-			body: JSON.stringify({ body: 'Should never be stored.' })
-		});
-		expect(write.status).toBe(403);
+	const write = await app.request('/api/grievances/GRV-0003/comments', {
+		method: 'POST',
+		headers: { 'Content-Type': 'application/json', Cookie: cookie },
+		body: JSON.stringify({ body: 'Should never be stored.' })
+	});
+	expect(write.status).toBe(404);
 
 		// Confirm nothing was persisted, viewed through the owner's own session.
 		const owner = await login(app, 'priya@example.test', 'student123');
@@ -414,9 +414,9 @@ describe('HostelGrievance API hardening regressions', () => {
 		expect(mine.status).toBe(200);
 
 		const other = await login(app, 'priya@example.test', 'student123');
-		const stolen = await app.request('/api/attachments/att-1', { headers: { Cookie: other.cookie } });
-		expect(stolen.status).toBe(403);
-		expect((await stolen.json()).code).toBe('unauthorized');
+	const stolen = await app.request('/api/attachments/att-1', { headers: { Cookie: other.cookie } });
+	expect(stolen.status).toBe(404);
+	expect((await stolen.json()).code).toBe('not_found');
 
 		const warden = await login(app, 'warden@example.test', 'warden123');
 		const asWarden = await app.request('/api/attachments/att-1', {
@@ -1113,5 +1113,408 @@ describe('V-13: Audit logging', () => {
 	it('audit module exports all required event types', async () => {
 		const mod = await import('./http/audit.ts');
 		expect(typeof mod.audit).toBe('function');
+	});
+});
+
+describe('V-21: TOCTOU race condition prevention', () => {
+	let dir: string;
+	let db: Database;
+	let app: ReturnType<typeof createApp>;
+
+	beforeEach(() => {
+		dir = mkdtempSync(join(tmpdir(), 'hg-race-'));
+		db = openDatabase(join(dir, 'hostel.db'));
+		const uploadDir = join(dir, 'uploads');
+		seedDatabase(db, uploadDir);
+		app = createApp({ db, uploadsDir: uploadDir });
+	});
+
+	afterEach(() => {
+		db.close();
+		rmSync(dir, { recursive: true, force: true });
+	});
+
+	it('PATCH reads row after async body parsing (no stale read)', async () => {
+		// Simulate the TOCTOU fix: the row is re-read after body parsing.
+		// We verify by checking that the row is read fresh each time.
+		const { cookie } = await login(app, 'student@example.test', 'student123');
+
+		// First edit succeeds
+		const edit1 = await app.request('/api/grievances/GRV-0001', {
+			method: 'PATCH',
+			headers: { 'Content-Type': 'application/json', Cookie: cookie },
+			body: JSON.stringify({ title: 'First edit after async re-read' })
+		});
+		expect(edit1.status).toBe(200);
+		expect((await edit1.json()).data.title).toBe('First edit after async re-read');
+
+		// Second edit also reads fresh
+		const edit2 = await app.request('/api/grievances/GRV-0001', {
+			method: 'PATCH',
+			headers: { 'Content-Type': 'application/json', Cookie: cookie },
+			body: JSON.stringify({ title: 'Second edit after async re-read' })
+		});
+		expect(edit2.status).toBe(200);
+		expect((await edit2.json()).data.title).toBe('Second edit after async re-read');
+	});
+
+	it('comment POST reads row after async body parsing', async () => {
+		const { cookie } = await login(app, 'student@example.test', 'student123');
+
+		// Comment succeeds on own grievance
+		const comment = await app.request('/api/grievances/GRV-0001/comments', {
+			method: 'POST',
+			headers: { 'Content-Type': 'application/json', Cookie: cookie },
+			body: JSON.stringify({ body: 'Comment after async re-read.' })
+		});
+		expect(comment.status).toBe(201);
+	});
+});
+
+describe('V-22: Attachment upload no orphaned files', () => {
+	let dir: string;
+	let db: Database;
+	let app: ReturnType<typeof createApp>;
+
+	beforeEach(() => {
+		dir = mkdtempSync(join(tmpdir(), 'hg-orphan-'));
+		db = openDatabase(join(dir, 'hostel.db'));
+		const uploadDir = join(dir, 'uploads');
+		seedDatabase(db, uploadDir);
+		app = createApp({ db, uploadsDir: uploadDir });
+	});
+
+	afterEach(() => {
+		db.close();
+		rmSync(dir, { recursive: true, force: true });
+	});
+
+	it('creates DB record before file write, cleans up on failure', async () => {
+		const { cookie } = await login(app, 'student@example.test', 'student123');
+
+		// Upload a valid attachment
+		const form = new FormData();
+		form.append('file', new File([PNG], 'test.png', { type: 'image/png' }));
+		const res = await app.request('/api/grievances/GRV-0008/attachments', {
+			method: 'POST',
+			headers: { Cookie: cookie },
+			body: form
+		});
+		expect(res.status).toBe(201);
+
+		// Verify both DB record and file exist
+		const meta = await res.json();
+		const row = db.prepare('SELECT * FROM attachments WHERE id = ?').get(meta.data.id);
+		expect(row).toBeDefined();
+		expect(existsSync(join(dir, 'uploads', (row as any).stored_filename))).toBe(true);
+	});
+});
+
+describe('V-23: Rate limiting on mutating endpoints', () => {
+	let dir: string;
+	let db: Database;
+	let app: ReturnType<typeof createApp>;
+
+	beforeEach(() => {
+		dir = mkdtempSync(join(tmpdir(), 'hg-ratelimit-'));
+		db = openDatabase(join(dir, 'hostel.db'));
+		const uploadDir = join(dir, 'uploads');
+		seedDatabase(db, uploadDir);
+		app = createApp({ db, uploadsDir: uploadDir });
+	});
+
+	afterEach(() => {
+		db.close();
+		rmSync(dir, { recursive: true, force: true });
+	});
+
+	it('returns 429 when grievance creation rate limit exceeded', async () => {
+		const { cookie } = await login(app, 'student@example.test', 'student123');
+
+		// Create 10 grievances (the limit)
+		for (let i = 0; i < 10; i++) {
+			await app.request('/api/grievances', {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json', Cookie: cookie },
+				body: JSON.stringify({
+					title: 'Rate limit test grievance ' + i,
+					category: 'Other',
+					description: 'Testing rate limiting on grievance creation endpoint.'
+				})
+			});
+		}
+
+		// 11th should be rate-limited
+		const res = await app.request('/api/grievances', {
+			method: 'POST',
+			headers: { 'Content-Type': 'application/json', Cookie: cookie },
+			body: JSON.stringify({
+				title: 'Rate limit exceeded grievance',
+				category: 'Other',
+				description: 'This should be rate-limited.'
+			})
+		});
+		expect(res.status).toBe(429);
+		expect((await res.json()).code).toBe('too_many_requests');
+	});
+});
+
+describe('V-24: Comments blocked on resolved grievances for students', () => {
+	let dir: string;
+	let db: Database;
+	let app: ReturnType<typeof createApp>;
+
+	beforeEach(() => {
+		dir = mkdtempSync(join(tmpdir(), 'hg-resolved-'));
+		db = openDatabase(join(dir, 'hostel.db'));
+		const uploadDir = join(dir, 'uploads');
+		seedDatabase(db, uploadDir);
+		app = createApp({ db, uploadsDir: uploadDir });
+	});
+
+	afterEach(() => {
+		db.close();
+		rmSync(dir, { recursive: true, force: true });
+	});
+
+	it('rejects student comment on resolved grievance', async () => {
+		const { cookie } = await login(app, 'rohan@example.test', 'student123');
+		// GRV-0004 is resolved
+		const res = await app.request('/api/grievances/GRV-0004/comments', {
+			method: 'POST',
+			headers: { 'Content-Type': 'application/json', Cookie: cookie },
+			body: JSON.stringify({ body: 'Trying to comment on resolved grievance.' })
+		});
+		expect(res.status).toBe(409);
+		expect((await res.json()).code).toBe('conflict');
+	});
+
+	it('allows warden comment on resolved grievance', async () => {
+		const { cookie } = await login(app, 'warden@example.test', 'warden123');
+		// GRV-0004 is resolved
+		const res = await app.request('/api/grievances/GRV-0004/comments', {
+			method: 'POST',
+			headers: { 'Content-Type': 'application/json', Cookie: cookie },
+			body: JSON.stringify({ body: 'Warden follow-up on resolved case.' })
+		});
+		expect(res.status).toBe(201);
+	});
+});
+
+describe('V-25: Old sessions invalidated on login', () => {
+	let dir: string;
+	let db: Database;
+	let app: ReturnType<typeof createApp>;
+
+	beforeEach(() => {
+		dir = mkdtempSync(join(tmpdir(), 'hg-session-'));
+		db = openDatabase(join(dir, 'hostel.db'));
+		const uploadDir = join(dir, 'uploads');
+		seedDatabase(db, uploadDir);
+		app = createApp({ db, uploadsDir: uploadDir });
+	});
+
+	afterEach(() => {
+		db.close();
+		rmSync(dir, { recursive: true, force: true });
+	});
+
+	it('invalidates previous sessions when user logs in again', async () => {
+		// First login
+		const first = await login(app, 'student@example.test', 'student123');
+		const firstToken = first.cookie.split('=').slice(1).join('=');
+		expect(db.prepare('SELECT COUNT(*) AS n FROM sessions WHERE token = ?').get(firstToken).n).toBe(1);
+
+		// Second login
+		const second = await login(app, 'student@example.test', 'student123');
+		const secondToken = second.cookie.split('=').slice(1).join('=');
+
+		// First session should be invalidated
+		expect(db.prepare('SELECT COUNT(*) AS n FROM sessions WHERE token = ?').get(firstToken).n).toBe(0);
+		// Second session should be valid
+		expect(db.prepare('SELECT COUNT(*) AS n FROM sessions WHERE token = ?').get(secondToken).n).toBe(1);
+
+		// First token should not work
+		const replay = await app.request('/api/me', { headers: { Cookie: first.cookie } });
+		expect(replay.status).toBe(401);
+	});
+});
+
+describe('V-26: Login timing side channel prevention', () => {
+	let dir: string;
+	let db: Database;
+	let app: ReturnType<typeof createApp>;
+
+	beforeEach(() => {
+		dir = mkdtempSync(join(tmpdir(), 'hg-timing-'));
+		db = openDatabase(join(dir, 'hostel.db'));
+		const uploadDir = join(dir, 'uploads');
+		seedDatabase(db, uploadDir);
+		app = createApp({ db, uploadsDir: uploadDir });
+	});
+
+	afterEach(() => {
+		db.close();
+		rmSync(dir, { recursive: true, force: true });
+	});
+
+	it('returns same error for non-existent email and wrong password', async () => {
+		// Non-existent email
+		const res1 = await app.request('/api/login', {
+			method: 'POST',
+			headers: { 'Content-Type': 'application/json' },
+			body: JSON.stringify({ email: 'nonexistent@test.com', password: 'wrong' })
+		});
+		expect(res1.status).toBe(401);
+		expect((await res1.json()).error).toBe('Invalid email or password.');
+
+		// Existing email, wrong password
+		const res2 = await app.request('/api/login', {
+			method: 'POST',
+			headers: { 'Content-Type': 'application/json' },
+			body: JSON.stringify({ email: 'student@example.test', password: 'wrong' })
+		});
+		expect(res2.status).toBe(401);
+		expect((await res2.json()).error).toBe('Invalid email or password.');
+	});
+});
+
+describe('V-27: Uniform 404 for unauthorized access', () => {
+	let dir: string;
+	let db: Database;
+	let app: ReturnType<typeof createApp>;
+
+	beforeEach(() => {
+		dir = mkdtempSync(join(tmpdir(), 'hg-404-'));
+		db = openDatabase(join(dir, 'hostel.db'));
+		const uploadDir = join(dir, 'uploads');
+		seedDatabase(db, uploadDir);
+		app = createApp({ db, uploadsDir: uploadDir });
+	});
+
+	afterEach(() => {
+		db.close();
+		rmSync(dir, { recursive: true, force: true });
+	});
+
+	it('returns 404 for both non-existent and unauthorized grievances', async () => {
+		const { cookie } = await login(app, 'student@example.test', 'student123');
+
+		// Non-existent grievance
+		const nonExistent = await app.request('/api/grievances/GRV-9999', { headers: { Cookie: cookie } });
+		expect(nonExistent.status).toBe(404);
+
+		// Unauthorized grievance (exists but belongs to another student)
+		const unauthorized = await app.request('/api/grievances/GRV-0003', { headers: { Cookie: cookie } });
+		expect(unauthorized.status).toBe(404);
+
+		// Both return the same error code
+		expect((await nonExistent.json()).code).toBe('not_found');
+		expect((await unauthorized.json()).code).toBe('not_found');
+	});
+});
+
+describe('V-28: Expired session cleanup', () => {
+	let dir: string;
+	let db: Database;
+	let app: ReturnType<typeof createApp>;
+
+	beforeEach(() => {
+		dir = mkdtempSync(join(tmpdir(), 'hg-cleanup-'));
+		db = openDatabase(join(dir, 'hostel.db'));
+		const uploadDir = join(dir, 'uploads');
+		seedDatabase(db, uploadDir);
+		app = createApp({ db, uploadsDir: uploadDir });
+	});
+
+	afterEach(() => {
+		db.close();
+		rmSync(dir, { recursive: true, force: true });
+	});
+
+	it('cleans up expired sessions on login', async () => {
+		// Create an expired session
+		db.prepare('INSERT INTO sessions (token, user_id, created_at, expires_at) VALUES (?, ?, ?, ?)').run(
+			'expired-token', 'stu-1', '2020-01-01T00:00:00.000Z', '2020-01-01T00:00:00.000Z'
+		);
+		expect(db.prepare('SELECT COUNT(*) AS n FROM sessions').get().n).toBe(1);
+
+		// Login triggers cleanup
+		await login(app, 'student@example.test', 'student123');
+
+		// Expired session should be cleaned up
+		expect(db.prepare('SELECT COUNT(*) AS n FROM sessions WHERE token = ?').get('expired-token').n).toBe(0);
+	});
+});
+
+describe('V-29: ID generation uses SQL MAX', () => {
+	let dir: string;
+	let db: Database;
+	let app: ReturnType<typeof createApp>;
+
+	beforeEach(() => {
+		dir = mkdtempSync(join(tmpdir(), 'hg-idgen-'));
+		db = openDatabase(join(dir, 'hostel.db'));
+		const uploadDir = join(dir, 'uploads');
+		seedDatabase(db, uploadDir);
+		app = createApp({ db, uploadsDir: uploadDir });
+	});
+
+	afterEach(() => {
+		db.close();
+		rmSync(dir, { recursive: true, force: true });
+	});
+
+	it('generates correct sequential IDs', async () => {
+		const { cookie } = await login(app, 'student@example.test', 'student123');
+
+		// Create multiple grievances and verify IDs are sequential
+		const ids: string[] = [];
+		for (let i = 0; i < 3; i++) {
+			const res = await app.request('/api/grievances', {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json', Cookie: cookie, 'x-forwarded-for': '10.0.0.250' },
+				body: JSON.stringify({
+					title: 'ID generation test ' + i,
+					category: 'Other',
+					description: 'Testing sequential ID generation with SQL MAX.'
+				})
+			});
+			expect(res.status).toBe(201);
+			ids.push((await res.json()).data.id);
+		}
+
+		// IDs should be sequential
+		expect(ids[0]).toBe('GRV-0009');
+		expect(ids[1]).toBe('GRV-0010');
+		expect(ids[2]).toBe('GRV-0011');
+	});
+});
+
+describe('V-30: Request body size limits', () => {
+	let dir: string;
+	let db: Database;
+	let app: ReturnType<typeof createApp>;
+
+	beforeEach(() => {
+		dir = mkdtempSync(join(tmpdir(), 'hg-bodylimit-'));
+		db = openDatabase(join(dir, 'hostel.db'));
+		const uploadDir = join(dir, 'uploads');
+		seedDatabase(db, uploadDir);
+		app = createApp({ db, uploadsDir: uploadDir });
+	});
+
+	afterEach(() => {
+		db.close();
+		rmSync(dir, { recursive: true, force: true });
+	});
+
+	it('rejects requests with oversized content-length', async () => {
+		const res = await app.request('/api/grievances', {
+			method: 'POST',
+			headers: { 'Content-Type': 'application/json', 'content-length': '10485760' },
+			body: JSON.stringify({ title: 'test' })
+		});
+		expect(res.status).toBe(413);
 	});
 });

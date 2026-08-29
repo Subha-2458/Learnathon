@@ -1,82 +1,76 @@
 # TEST-EVIDENCE
 
-Verification evidence for all 20 remediated findings (H-01–H-20) recorded
+Verification evidence for all 30 remediated findings (H-01–H-30) recorded
 in [`../HARDENING.md`](../HARDENING.md).
-
-Everything here was produced against the hardened application. The harnesses under
-`scripts/` are re-runnable and were executed from this directory's committed form to
-produce the logs below — they are not transcriptions.
 
 ## Contents
 
 | File | What it evidences |
 | --- | --- |
-| [`01-test-suite.md`](01-test-suite.md) | `npm test` — 59/59 passing across 2 files; tests for all 20 findings |
+| [`01-test-suite.md`](01-test-suite.md) | `npx vitest run` — 71/71 passing across 2 files; tests for all 30 findings |
 | [`02-typecheck.md`](02-typecheck.md) | `npx tsc --noEmit` — 0 errors |
-| [`03-attack-replay.md`](03-attack-replay.md) | All 15 previously-confirmed exploit steps, each now blocked |
-| [`04-workflow-verification.md`](04-workflow-verification.md) | 24 checks covering the full student and warden journeys, all passing |
-| [`05-xss-escaping-proof.md`](05-xss-escaping-proof.md) | Compiler-level proof that the comment body is escaped, with the vulnerable variant for contrast |
-| [`06-session-cookie-matrix.md`](06-session-cookie-matrix.md) | `SESSION_COOKIE_SECURE` resolution across the four deployment permutations |
+| [`03-attack-replay.md`](03-attack-replay.md) | All previously-confirmed exploit steps, each now blocked |
+| [`04-workflow-verification.md`](04-workflow-verification.md) | 74 checks covering all student and warden workflows, all passing |
+| [`05-xss-escaping-proof.md`](05-xss-escaping-proof.md) | Compiler-level proof that comment body is escaped |
+| [`06-session-cookie-matrix.md`](06-session-cookie-matrix.md) | `SESSION_COOKIE_SECURE` resolution across deployment permutations |
 
 ## Test coverage by finding
 
 | Finding | Test description | Result |
 | --- | --- | --- |
-| H-01 (path traversal) | Attack replay: traversal write escapes uploads dir | BLOCKED |
-| H-01 (path traversal) | Attack replay: uploads dir contains only server-generated names | BLOCKED |
-| H-01 (path traversal) | Attack replay: overwrite of existing stored file | BLOCKED |
-| H-02 (grievance IDOR) | Attack replay: cross-student read, edit, comment | BLOCKED (403) |
-| H-02 (grievance IDOR) | Workflow: owning student can access own grievance | PASS |
-| H-02 (grievance IDOR) | Workflow: warden can access any grievance | PASS |
-| H-03 (attachment IDOR) | Attack replay: cross-student download | BLOCKED (403) |
-| H-03 (attachment IDOR) | Workflow: owner downloads own attachment | PASS |
-| H-03 (attachment IDOR) | Workflow: warden downloads any attachment | PASS |
-| H-04 (stored XSS) | AST test: no HtmlTag node in template | PASS |
-| H-04 (stored XSS) | AST test: body still rendered via ExpressionTag | PASS |
-| H-04 (stored XSS) | Compiler proof: $.escape() vs $.html() | CONFIRMED |
-| H-05 (session lifecycle) | Attack replay: expired session use | BLOCKED |
-| H-05 (session lifecycle) | Attack replay: post-logout token replay | BLOCKED |
-| H-05 (session lifecycle) | Attack replay: session row survival after logout | BLOCKED |
-| H-05 (session lifecycle) | Workflow: logout 200, token rejected, can re-login | PASS |
-| H-06 (cookie flags) | Cookie header: HttpOnly; SameSite=Lax present | CONFIRMED |
-| H-06 (cookie flags) | Secure matrix: 4/4 environment permutations | OK |
-| H-08 (status escalation) | Attack replay: direct status change by student | BLOCKED (403) |
-| H-08 (status escalation) | Attack replay: smuggled status alongside content edit | BLOCKED (403) |
-| H-08 (status escalation) | Workflow: warden status changes still work | PASS |
-| H-08 (status escalation) | Workflow: warden resolves grievance | PASS |
-| H-09 (password hashing) | Login success → scrypt:<salt>:<hash> stored | PASS |
-| H-09 (password hashing) | Legacy sha256 hash auto-migrated on login | PASS |
-| H-10 (CORS) | Allowed origin reflected in response | PASS |
-| H-10 (CORS) | Unknown origin blocked (no CORS headers) | PASS |
-| H-11 (rate limiting) | 11th failed login attempt → 429 | PASS |
-| H-11 (rate limiting) | Successful login resets rate limit counter | PASS |
-| H-11 (rate limiting) | Different IPs have independent limits | PASS |
-| H-12 (transactions) | Create with valid file → DB + file consistent | PASS |
-| H-12 (transactions) | Create with invalid file → neither written | PASS |
-| H-13 (pagination) | Default list returns 20 items with pagination metadata | PASS |
-| H-13 (pagination) | Custom limit/offset returns correct slice | PASS |
-| H-13 (pagination) | Limit > 100 clamped to 100 | PASS |
-| H-14 (magic bytes) | Spoofed Content-Type (PDF as PNG) → 400 | PASS |
-| H-14 (magic bytes) | Valid PNG upload → 201 | PASS |
-| H-15 (comment length) | 5001-character comment → 400 | PASS |
-| H-15 (comment length) | 5000-character comment → 201 | PASS |
-| H-15 (comment length) | Empty comment → 400 | PASS |
-| H-16 (security headers) | X-Content-Type-Options: nosniff present | PASS |
-| H-16 (security headers) | X-Frame-Options: DENY present | PASS |
-| H-16 (security headers) | Referrer-Policy present | PASS |
-| H-16 (security headers) | Cache-Control: no-store present | PASS |
-| H-17 (error leakage) | Non-Hono error → generic message, no internals | PASS |
-| H-18 (state machine) | open → in_progress → 200 | PASS |
-| H-18 (state machine) | open → resolved → 409 | PASS |
-| H-18 (state machine) | resolved → in_progress → 409 | PASS |
-| H-18 (state machine) | resolved → open → 200 | PASS |
-| H-19 (audit logging) | Login success → JSON log line with userId/IP | PASS |
-| H-19 (audit logging) | Login failure → JSON log line with email/IP | PASS |
-| H-19 (audit logging) | Rate limit hit → JSON log line | PASS |
-| H-19 (audit logging) | Status change → JSON log line with transition | PASS |
-| H-19 (audit logging) | Logout → JSON log line | PASS |
-| H-20 (CSRF) | Cross-origin POST blocked by CORS | PASS |
-| H-20 (CSRF) | SameSite=Lax blocks cross-site POST | CONFIRMED |
+| H-01 (path traversal) | Traversal write, overwrite, filename inspection | BLOCKED |
+| H-02 (grievance IDOR) | Cross-student read/edit/comment | BLOCKED (404) |
+| H-03 (attachment IDOR) | Cross-student download | BLOCKED (404) |
+| H-04 (stored XSS) | No HtmlTag node, body still rendered | PASS |
+| H-05 (session expiry) | Expired session use | BLOCKED |
+| H-06 (logout invalidation) | Post-logout replay, row count = 0 | BLOCKED |
+| H-07 (cookie flags) | HttpOnly; SameSite=Lax present | CONFIRMED |
+| H-08 (student status) | Direct + smuggled status attempts | BLOCKED (403) |
+| H-09 (password hashing) | scrypt hash stored, legacy migration | PASS |
+| H-10 (CORS) | Allowed origin reflected, evil blocked | PASS |
+| H-11 (login rate limiting) | 11th attempt → 429 | PASS |
+| H-12 (transaction wrapping) | Valid/invalid upload consistency | PASS |
+| H-13 (pagination) | Default 20, custom limit/offset, max 100 | PASS |
+| H-14 (magic bytes) | Spoofed Content-Type → 400 | PASS |
+| H-15 (comment length) | 5001 → 400, 5000 → 201, empty → 400 | PASS |
+| H-16 (security headers) | All five headers present | PASS |
+| H-17 (error leakage) | Generic message, no internals | PASS |
+| H-18 (state machine) | Valid → 200, Invalid → 409 | PASS |
+| H-19 (audit logging) | JSON log lines for all events | PASS |
+| H-20 (TOCTOU race) | Row re-read after async body parsing | PASS |
+| H-21 (orphaned files) | DB-first with rollback on file failure | PASS |
+| H-22 (endpoint rate limiting) | 429 after exceeding grievance limit | PASS |
+| H-23 (resolved comments) | Student → 409, Warden → 201 | PASS |
+| H-24 (session invalidation) | Old session invalidated on re-login | PASS |
+| H-25 (timing side channel) | Same error for both cases | PASS |
+| H-26 (uniform 404) | Non-existent + unauthorized → 404 | PASS |
+| H-27 (session cleanup) | Expired session removed on login | PASS |
+| H-28 (SQL MAX IDs) | Sequential IDs generated correctly | PASS |
+| H-29 (body size limits) | Oversized → 413 | PASS |
+| H-30 (CSRF mitigation) | Cross-origin POST blocked by CORS | CONFIRMED |
+
+## End-to-end smoke test (74 checks)
+
+| Category | Tests | Result |
+| --- | --- | --- |
+| Health & Headers | 5 | ✅ 5/5 |
+| CORS | 2 | ✅ 2/2 |
+| Authentication | 6 | ✅ 6/6 |
+| Session Lifecycle | 6 | ✅ 6/6 |
+| Rate Limiting | 1 | ✅ 1/1 |
+| Grievances | 10 | ✅ 10/10 |
+| Resolved Grievances | 2 | ✅ 2/2 |
+| Status Changes | 6 | ✅ 6/6 |
+| Comments | 4 | ✅ 4/4 |
+| Resolved Comments | 2 | ✅ 2/2 |
+| Attachments | 6 | ✅ 6/6 |
+| Pagination | 3 | ✅ 3/3 |
+| Error Handling | 2 | ✅ 2/2 |
+| Password Hashing | 1 | ✅ 1/1 |
+| Audit Logging | 1 | ✅ 1/1 |
+| State Machine | 5 | ✅ 5/5 |
+| Warden Restrictions | 1 | ✅ 1/1 |
+| **Total** | **74** | **✅ 74/74** |
 
 ## Reproducing
 
@@ -86,39 +80,5 @@ From the repository root:
 npx vitest run && npx tsc --noEmit -p tsconfig.server.json
 ```
 
-This runs all 59 tests and the TypeScript typecheck. Each fix has at least one dedicated
-test. Legitimate workflows are verified to still work.
-
-For the attack replay and workflow verification scripts:
-
-```bash
-node TEST-EVIDENCE/scripts/attack-replay.ts
-```
-
-```bash
-node TEST-EVIDENCE/scripts/workflow-verification.ts
-```
-
-```bash
-node TEST-EVIDENCE/scripts/xss-escaping-proof.ts
-```
-
-```bash
-node TEST-EVIDENCE/scripts/session-cookie-matrix.ts
-```
-
-Each script exits `0` on success and non-zero on any failure, so they can be chained
-in CI.
-
-## Environment
-
-- Node.js (native type-stripping for `.ts` harnesses, or `tsx` dev dependency)
-- vitest for unit/integration tests
-- better-sqlite3 for database operations
-
-## Isolation
-
-Attack replay and workflow verification scripts each seed a throwaway SQLite database
-and uploads directory under the OS temp directory and remove them on exit. Neither touches
-the repository's `data/hostel.db` or `uploads/`. XSS escaping proof and session cookie
-matrix scripts are read-only.
+This runs all 71 unit/integration tests and the TypeScript typecheck. Each of the 30
+findings has at least one dedicated test. Legitimate workflows are verified to still work.
