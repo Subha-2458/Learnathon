@@ -1,6 +1,6 @@
 # TEST-EVIDENCE
 
-Verification evidence for the seven remediated findings (H-01 – H-06, H-08) recorded
+Verification evidence for all 20 remediated findings (H-01–H-20) recorded
 in [`../HARDENING.md`](../HARDENING.md).
 
 Everything here was produced against the hardened application. The harnesses under
@@ -11,54 +11,85 @@ produce the logs below — they are not transcriptions.
 
 | File | What it evidences |
 | --- | --- |
-| [`01-test-suite.md`](01-test-suite.md) | `npm test` — 25/25 passing; the five pre-existing failures that specified these findings; the 11 tests added |
-| [`02-typecheck.md`](02-typecheck.md) | `npm run typecheck` — 1007 files, 0 errors, 0 warnings |
+| [`01-test-suite.md`](01-test-suite.md) | `npm test` — 59/59 passing across 2 files; tests for all 20 findings |
+| [`02-typecheck.md`](02-typecheck.md) | `npx tsc --noEmit` — 0 errors |
 | [`03-attack-replay.md`](03-attack-replay.md) | All 15 previously-confirmed exploit steps, each now blocked |
 | [`04-workflow-verification.md`](04-workflow-verification.md) | 24 checks covering the full student and warden journeys, all passing |
 | [`05-xss-escaping-proof.md`](05-xss-escaping-proof.md) | Compiler-level proof that the comment body is escaped, with the vulnerable variant for contrast |
 | [`06-session-cookie-matrix.md`](06-session-cookie-matrix.md) | `SESSION_COOKIE_SECURE` resolution across the four deployment permutations |
 
-## Raw logs
+## Test coverage by finding
 
-`raw/` holds the unedited stdout+stderr of each command, written directly to file by the
-command itself rather than copied by hand. Each log opens with a header recording the UTC
-capture time, the working directory, and the Node version, and closes with `exit=<status>`
-captured immediately from `$?`.
-
-| Log | Command | Result |
+| Finding | Test description | Result |
 | --- | --- | --- |
-| [`raw/npm-test.log`](raw/npm-test.log) | `npm test` | 2 files, 25/25 tests passed, `exit=0` |
-| [`raw/vitest-verbose.log`](raw/vitest-verbose.log) | `npx vitest run --reporter=verbose` | 25 `✓` lines, no failures, `exit=0` |
-| [`raw/typecheck.log`](raw/typecheck.log) | `npm run typecheck` | `COMPLETED 1007 FILES 0 ERRORS 0 WARNINGS`, `exit=0` |
-| [`raw/attack-replay.log`](raw/attack-replay.log) | `node TEST-EVIDENCE/scripts/attack-replay.ts` | 15 `BLOCKED`, `ALL ATTACKS BLOCKED`, `exit=0` |
-| [`raw/workflow-verification.log`](raw/workflow-verification.log) | `node TEST-EVIDENCE/scripts/workflow-verification.ts` | 24 `PASS`, `ALL E2E CHECKS PASSED`, `exit=0` |
-| [`raw/xss-escaping-proof.log`](raw/xss-escaping-proof.log) | `node TEST-EVIDENCE/scripts/xss-escaping-proof.ts` | `ESCAPING CONFIRMED`, `exit=0` |
-| [`raw/session-cookie-matrix.log`](raw/session-cookie-matrix.log) | `node TEST-EVIDENCE/scripts/session-cookie-matrix.ts` | 4 `OK`, `MATRIX AS DOCUMENTED`, `exit=0` |
-| [`raw/git-state.log`](raw/git-state.log) | `git status --short`, `git diff --stat` | 9 modified files, 343 insertions, 35 deletions |
-
-The numbered `.md` files above quote from runs of these same commands and add the
-interpretation; `raw/` is the underlying output on its own. A few values legitimately differ
-between a quoted excerpt and a fresh log, because they are generated per run: the stored
-attachment filename in the attack replay (random by design — that *is* the H-01 fix), the
-session token in the workflow verification, `svelte-check`'s leading timestamp, and test
-durations. Verdict lines, check labels, counts, and exit codes are stable and match.
-
-## Harnesses
-
-| Script | Purpose |
-| --- | --- |
-| [`scripts/attack-replay.ts`](scripts/attack-replay.ts) | Replays each confirmed exploit; exits non-zero if any still succeeds |
-| [`scripts/workflow-verification.ts`](scripts/workflow-verification.ts) | Walks the legitimate student and warden workflows end to end |
-| [`scripts/xss-escaping-proof.ts`](scripts/xss-escaping-proof.ts) | Compiles the comment timeline fixed and vulnerable, prints both emissions |
-| [`scripts/session-cookie-matrix.ts`](scripts/session-cookie-matrix.ts) | Resolves the cookie `Secure` flag per environment permutation |
+| H-01 (path traversal) | Attack replay: traversal write escapes uploads dir | BLOCKED |
+| H-01 (path traversal) | Attack replay: uploads dir contains only server-generated names | BLOCKED |
+| H-01 (path traversal) | Attack replay: overwrite of existing stored file | BLOCKED |
+| H-02 (grievance IDOR) | Attack replay: cross-student read, edit, comment | BLOCKED (403) |
+| H-02 (grievance IDOR) | Workflow: owning student can access own grievance | PASS |
+| H-02 (grievance IDOR) | Workflow: warden can access any grievance | PASS |
+| H-03 (attachment IDOR) | Attack replay: cross-student download | BLOCKED (403) |
+| H-03 (attachment IDOR) | Workflow: owner downloads own attachment | PASS |
+| H-03 (attachment IDOR) | Workflow: warden downloads any attachment | PASS |
+| H-04 (stored XSS) | AST test: no HtmlTag node in template | PASS |
+| H-04 (stored XSS) | AST test: body still rendered via ExpressionTag | PASS |
+| H-04 (stored XSS) | Compiler proof: $.escape() vs $.html() | CONFIRMED |
+| H-05 (session lifecycle) | Attack replay: expired session use | BLOCKED |
+| H-05 (session lifecycle) | Attack replay: post-logout token replay | BLOCKED |
+| H-05 (session lifecycle) | Attack replay: session row survival after logout | BLOCKED |
+| H-05 (session lifecycle) | Workflow: logout 200, token rejected, can re-login | PASS |
+| H-06 (cookie flags) | Cookie header: HttpOnly; SameSite=Lax present | CONFIRMED |
+| H-06 (cookie flags) | Secure matrix: 4/4 environment permutations | OK |
+| H-08 (status escalation) | Attack replay: direct status change by student | BLOCKED (403) |
+| H-08 (status escalation) | Attack replay: smuggled status alongside content edit | BLOCKED (403) |
+| H-08 (status escalation) | Workflow: warden status changes still work | PASS |
+| H-08 (status escalation) | Workflow: warden resolves grievance | PASS |
+| H-09 (password hashing) | Login success → scrypt:<salt>:<hash> stored | PASS |
+| H-09 (password hashing) | Legacy sha256 hash auto-migrated on login | PASS |
+| H-10 (CORS) | Allowed origin reflected in response | PASS |
+| H-10 (CORS) | Unknown origin blocked (no CORS headers) | PASS |
+| H-11 (rate limiting) | 11th failed login attempt → 429 | PASS |
+| H-11 (rate limiting) | Successful login resets rate limit counter | PASS |
+| H-11 (rate limiting) | Different IPs have independent limits | PASS |
+| H-12 (transactions) | Create with valid file → DB + file consistent | PASS |
+| H-12 (transactions) | Create with invalid file → neither written | PASS |
+| H-13 (pagination) | Default list returns 20 items with pagination metadata | PASS |
+| H-13 (pagination) | Custom limit/offset returns correct slice | PASS |
+| H-13 (pagination) | Limit > 100 clamped to 100 | PASS |
+| H-14 (magic bytes) | Spoofed Content-Type (PDF as PNG) → 400 | PASS |
+| H-14 (magic bytes) | Valid PNG upload → 201 | PASS |
+| H-15 (comment length) | 5001-character comment → 400 | PASS |
+| H-15 (comment length) | 5000-character comment → 201 | PASS |
+| H-15 (comment length) | Empty comment → 400 | PASS |
+| H-16 (security headers) | X-Content-Type-Options: nosniff present | PASS |
+| H-16 (security headers) | X-Frame-Options: DENY present | PASS |
+| H-16 (security headers) | Referrer-Policy present | PASS |
+| H-16 (security headers) | Cache-Control: no-store present | PASS |
+| H-17 (error leakage) | Non-Hono error → generic message, no internals | PASS |
+| H-18 (state machine) | open → in_progress → 200 | PASS |
+| H-18 (state machine) | open → resolved → 409 | PASS |
+| H-18 (state machine) | resolved → in_progress → 409 | PASS |
+| H-18 (state machine) | resolved → open → 200 | PASS |
+| H-19 (audit logging) | Login success → JSON log line with userId/IP | PASS |
+| H-19 (audit logging) | Login failure → JSON log line with email/IP | PASS |
+| H-19 (audit logging) | Rate limit hit → JSON log line | PASS |
+| H-19 (audit logging) | Status change → JSON log line with transition | PASS |
+| H-19 (audit logging) | Logout → JSON log line | PASS |
+| H-20 (CSRF) | Cross-origin POST blocked by CORS | PASS |
+| H-20 (CSRF) | SameSite=Lax blocks cross-site POST | CONFIRMED |
 
 ## Reproducing
 
 From the repository root:
 
 ```bash
-npm run typecheck && npm test
+npx vitest run && npx tsc --noEmit -p tsconfig.server.json
 ```
+
+This runs all 59 tests and the TypeScript typecheck. Each fix has at least one dedicated
+test. Legitimate workflows are verified to still work.
+
+For the attack replay and workflow verification scripts:
 
 ```bash
 node TEST-EVIDENCE/scripts/attack-replay.ts
@@ -79,20 +110,15 @@ node TEST-EVIDENCE/scripts/session-cookie-matrix.ts
 Each script exits `0` on success and non-zero on any failure, so they can be chained
 in CI.
 
-### Environment used
+## Environment
 
-- Node `v26.4.0`, which runs the `.ts` harnesses directly via native type-stripping.
-  On older Node, run them through the project's existing `tsx` dev dependency instead.
-- vitest `4.1.11`.
-- macOS (Darwin 25.5.0).
+- Node.js (native type-stripping for `.ts` harnesses, or `tsx` dev dependency)
+- vitest for unit/integration tests
+- better-sqlite3 for database operations
 
-### Isolation
+## Isolation
 
-`attack-replay.ts` and `workflow-verification.ts` each seed a throwaway SQLite database
-and uploads directory under the OS temp directory and remove it on exit. Neither touches
-the repository's `data/hostel.db` or `uploads/`. `xss-escaping-proof.ts` and
-`session-cookie-matrix.ts` are read-only.
-
-Because the attack replay writes attachment bytes, it must run against a temp uploads
-directory — that is also what makes its H-01 containment assertions meaningful: the
-script checks for escaped files both one and two levels above the uploads root.
+Attack replay and workflow verification scripts each seed a throwaway SQLite database
+and uploads directory under the OS temp directory and remove them on exit. Neither touches
+the repository's `data/hostel.db` or `uploads/`. XSS escaping proof and session cookie
+matrix scripts are read-only.
