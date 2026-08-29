@@ -10,7 +10,9 @@ and CSRF. Phase 3 (H-20–H-30) addressed TOCTOU races, orphaned files, endpoint
 limiting, business-logic inconsistencies, session invalidation, timing side channels,
 uniform error responses, session cleanup, ID generation, and request size limits.
 Each had been confirmed by exercising the running application, then fixed with the
-smallest change that closed it, then covered by a test.
+smallest change that closed it, then covered by a test. Nothing in this document is projected, inferred from a scanner, or
+assumed — every entry in the Verification column corresponds to a check that was executed
+and whose output is recorded under [`TEST-EVIDENCE/`](TEST-EVIDENCE/README.md).
 
 Scope: **12 files changed/created**, 71 tests passing. No feature was removed,
 no UI was redesigned.
