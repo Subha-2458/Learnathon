@@ -23,5 +23,7 @@ export function handleError(err: unknown, c: Context) {
 		return jsonError(c, err.status, err.code, err.message);
 	}
 	console.error(err);
-	return jsonError(c, 500, 'internal', err instanceof Error ? err.message : String(err));
+	// Never leak internal details to the client.  The error is already
+	// logged to the server console above for debugging.
+	return jsonError(c, 500, 'internal', 'An unexpected error occurred.');
 }

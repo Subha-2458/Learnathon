@@ -106,4 +106,5 @@ export type ErrorCode =
 	| 'unauthorized'
 	| 'not_found'
 	| 'conflict'
+	| 'too_many_requests'
 	| 'internal';

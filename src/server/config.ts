@@ -27,6 +27,16 @@ export const SESSION_COOKIE_SECURE = process.env.HOSTEL_COOKIE_SECURE
 	? process.env.HOSTEL_COOKIE_SECURE === 'true'
 	: process.env.NODE_ENV === 'production';
 
+/**
+ * Allowed CORS origins.  In development the Vite dev server proxies to the API,
+ * so the browser's Origin is http://localhost:5173.  In production, set
+ * HOSTEL_CORS_ORIGIN to the domain serving the frontend.
+ */
+export const CORS_ORIGINS: string[] = (process.env.HOSTEL_CORS_ORIGIN ?? 'http://localhost:5173')
+	.split(',')
+	.map((s) => s.trim())
+	.filter(Boolean);
+
 export const MAX_ATTACHMENT_BYTES = 2 * 1024 * 1024;
 
 export const ALLOWED_ATTACHMENT_TYPES = new Set([

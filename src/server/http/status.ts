@@ -42,6 +42,36 @@ export function statusToDb(status: string): GrievanceStatusDb {
 	}
 }
 
+/**
+ * Enforce valid grievance status transitions.
+ *
+ * Allowed:
+ *   open → in_progress   (warden starts work)
+ *   in_progress → resolved   (warden resolves)
+ *   in_progress → open   (warden reopens)
+ *   resolved → open   (reopen after resolution)
+ *
+ * Forbidden:
+ *   open → resolved   (skip acknowledgment)
+ *   resolved → in_progress   (must reopen first)
+ */
+const VALID_TRANSITIONS: Record<GrievanceStatusDb, GrievanceStatusDb[]> = {
+	open: ['in_progress'],
+	in_progress: ['open', 'resolved'],
+	resolved: ['open']
+};
+
+export function assertValidTransition(current: GrievanceStatusDb, next: GrievanceStatusDb): void {
+	const allowed = VALID_TRANSITIONS[current];
+	if (!allowed || !allowed.includes(next)) {
+		throw new HttpError(
+			409,
+			'conflict',
+			`Cannot transition grievance from "${current}" to "${next}".`
+		);
+	}
+}
+
 export function parseCategory(value: string): GrievanceCategory {
 	if ((GRIEVANCE_CATEGORIES as readonly string[]).includes(value)) {
 		return value as GrievanceCategory;
