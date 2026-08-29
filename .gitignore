@@ -8,6 +8,8 @@ yarn-error.log*
 pnpm-debug.log*
 coverage/
 
+
+.freebuff
 # Output
 .output
 .vercel

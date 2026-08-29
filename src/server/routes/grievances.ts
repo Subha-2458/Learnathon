@@ -1,3 +1,4 @@
+
 import { Hono } from 'hono';
 import type { AppEnv } from '../env.ts';
 import { requireUser } from '../auth/session.ts';
@@ -17,7 +18,8 @@ import {
 import type { CommentRow, AttachmentRow } from '../types/index.ts';
 import { toPublicAttachment, toPublicComment, toPublicUser } from '../db/map.ts';
 import { HttpError } from '../http/errors.ts';
-import { parseCategory, statusToDb } from '../http/status.ts';
+import { audit } from '../http/audit.ts';
+import { parseCategory, statusToDb, assertValidTransition } from '../http/status.ts';
 import {
 	bufferFromUpload,
 	newStoredName,
@@ -35,13 +37,29 @@ function readString(value: unknown): string | undefined {
 
 export const grievanceRoutes = new Hono<AppEnv>();
 
+const DEFAULT_PAGE_LIMIT = 20;
+const MAX_PAGE_LIMIT = 100;
+
 grievanceRoutes.get('/', (c) => {
 	const db = c.get('db');
 	const user = requireUser(c, db);
+
+	// Pagination — clamp to sane bounds so no one can request unlimited rows.
+	const rawLimit = Number.parseInt(c.req.query('limit') ?? '', 10);
+	const rawOffset = Number.parseInt(c.req.query('offset') ?? '', 10);
+	const limit = Number.isFinite(rawLimit) && rawLimit > 0
+		? Math.min(rawLimit, MAX_PAGE_LIMIT)
+		: DEFAULT_PAGE_LIMIT;
+	const offset = Number.isFinite(rawOffset) && rawOffset > 0 ? rawOffset : 0;
+
 	const rows =
-		user.role === 'warden' ? listAllGrievanceRows(db) : listGrievanceRowsForStudent(db, user.id);
+		user.role === 'warden'
+			? listAllGrievanceRows(db, limit, offset)
+			: listGrievanceRowsForStudent(db, user.id, limit, offset);
+
 	return c.json({
-		data: rows.map((row) => assembleGrievance(db, row))
+		data: rows.map((row) => assembleGrievance(db, row)),
+		pagination: { limit, offset, count: rows.length }
 	});
 });
 
@@ -91,29 +109,58 @@ grievanceRoutes.post('/', async (c) => {
 	}
 	const parsedCategory = parseCategory(category);
 
+	// Buffer and validate the upload BEFORE any DB work so we never write a
+	// grievance row without its attachment (orphan on failure).
+	let bytes: Buffer | undefined;
+	let stored: string | undefined;
+	if (upload) {
+		bytes = await bufferFromUpload(upload);
+		stored = newStoredName(upload.type);
+	}
+
 	const id = nextGrievanceId(db);
 	const ts = nowIso();
-	db.prepare(
-		`INSERT INTO grievances (id, student_id, title, category, description, status, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, 'open', ?, ?)`
-	).run(id, user.id, title, parsedCategory, description, ts, ts);
 
-	if (upload) {
-		const bytes = await bufferFromUpload(upload);
-		const stored = newStoredName(upload.type);
-		writeStoredFile(uploadsDir, stored, bytes);
-		db.prepare(
-			`INSERT INTO attachments (id, grievance_id, original_filename, stored_filename, mime_type, size_bytes, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?)`
-		).run(
-			nextAttachmentId(db),
-			id,
-			originalBasename(upload.name),
-			stored,
-			upload.type,
-			bytes.byteLength,
-			ts
-		);
+	// Both inserts run in a single transaction so the grievance and its
+	// attachment record are always consistent.
+	try {
+		db.transaction(() => {
+			db.prepare(
+				`INSERT INTO grievances (id, student_id, title, category, description, status, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, 'open', ?, ?)`
+			).run(id, user.id, title, parsedCategory, description, ts, ts);
+
+			if (upload && bytes && stored) {
+				db.prepare(
+					`INSERT INTO attachments (id, grievance_id, original_filename, stored_filename, mime_type, size_bytes, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?)`
+				).run(
+					nextAttachmentId(db),
+					id,
+					originalBasename(upload.name),
+					stored,
+					upload.type,
+					bytes.byteLength,
+					ts
+				);
+			}
+		})();
+	} catch (err) {
+		// If the transaction failed, nothing was written to the DB.
+		throw err;
+	}
+
+	// Write the file to disk AFTER the DB transaction succeeds.  If the file
+	// write fails we roll back the DB rows we just committed.
+	try {
+		if (upload && bytes && stored) {
+			writeStoredFile(uploadsDir, stored, bytes);
+		}
+	} catch (fileErr) {
+		// Clean up the DB rows that were just committed.
+		db.prepare('DELETE FROM attachments WHERE grievance_id = ?').run(id);
+		db.prepare('DELETE FROM grievances WHERE id = ?').run(id);
+		throw fileErr;
 	}
 
 	return c.json({ data: assembleGrievance(db, requireGrievance(db, id)) }, 201);
@@ -152,6 +199,9 @@ grievanceRoutes.post('/:id/comments', async (c) => {
 			: '';
 	if (!text) {
 		throw new HttpError(400, 'bad_request', 'Comment cannot be empty.');
+	}
+	if (text.length > 5000) {
+		throw new HttpError(400, 'bad_request', 'Comment must be at most 5000 characters.');
 	}
 
 	const id = nextCommentId(db);
@@ -284,13 +334,21 @@ grievanceRoutes.patch('/:id', async (c) => {
 			if (typeof status !== 'string') {
 				throw new HttpError(400, 'bad_request', 'Invalid grievance status.');
 			}
-			const nextStatus = statusToDb(status);
-			const ts = nowIso();
+		const nextStatus = statusToDb(status);
+		assertValidTransition(row.status, nextStatus);
+		const ts = nowIso();
 			db.prepare('UPDATE grievances SET status = ?, updated_at = ? WHERE id = ?').run(
 				nextStatus,
 				ts,
 				row.id
 			);
+		audit({
+			ts: new Date().toISOString(),
+			event: 'status_change',
+			userId: user.id,
+			resource: row.id,
+			detail: `${row.status} → ${nextStatus}`
+		});
 			break;
 		}
 		default: {

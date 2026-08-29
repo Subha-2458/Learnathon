@@ -6,6 +6,8 @@ import { authRoutes } from './routes/auth.ts';
 import { grievanceRoutes } from './routes/grievances.ts';
 import { attachmentRoutes } from './routes/attachments.ts';
 import { cors } from 'hono/cors';
+import { CORS_ORIGINS } from './config.ts';
+import { securityHeaders } from './http/security-headers.ts';
 
 export type CreateAppOptions = {
 	db: Database;
@@ -20,7 +22,18 @@ export function createApp(options: CreateAppOptions) {
 		c.set('uploadsDir', options.uploadsDir);
 		await next();
 	});
-	app.use('/api/*', cors({ origin: (origin) => origin ?? '*', credentials: true }));
+	app.use(
+	'/api/*',
+	cors({
+		origin: (origin) => {
+			// Allow requests with no Origin (same-origin, curl, server-to-server).
+			if (!origin) return origin;
+			return CORS_ORIGINS.includes(origin) ? origin : '';
+		},
+		credentials: true
+	})
+);
+	app.use('/api/*', securityHeaders);
 
 	app.onError((err, c) => handleError(err, c));
 

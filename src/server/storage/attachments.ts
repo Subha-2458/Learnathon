@@ -74,9 +74,65 @@ export function assertPermittedAttachment(mime: string, size: number): void {
 	}
 }
 
+/**
+ * Verify that the file's actual bytes match the declared MIME type by
+ * inspecting magic-byte signatures.  This catches Content-Type spoofing:
+ * a request that claims image/png but contains a PDF will be rejected.
+ */
+function assertMagicBytesMatch(bytes: Buffer, mime: string): void {
+	if (bytes.length < 12) {
+		throw new HttpError(400, 'bad_request', 'File is too small to identify.');
+	}
+
+	let detected: string | undefined;
+
+	// JPEG: starts with FF D8 FF
+	if (bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff) {
+		detected = 'image/jpeg';
+	}
+	// PNG: starts with 89 50 4e 47 0d 0a 1a 0a (\x89PNG\r\n\x1a\n)
+	else if (
+		bytes[0] === 0x89 &&
+		bytes[1] === 0x50 &&
+		bytes[2] === 0x4e &&
+		bytes[3] === 0x47
+	) {
+		detected = 'image/png';
+	}
+	// GIF: starts with GIF8 (GIF87a or GIF89a)
+	else if (bytes[0] === 0x47 && bytes[1] === 0x49 && bytes[2] === 0x46 && bytes[3] === 0x38) {
+		detected = 'image/gif';
+	}
+	// WebP: RIFF header (52 49 46 46) with WEBP at offset 8
+	else if (
+		bytes[0] === 0x52 &&
+		bytes[1] === 0x49 &&
+		bytes[2] === 0x46 &&
+		bytes[3] === 0x46 &&
+		bytes[8] === 0x57 &&
+		bytes[9] === 0x45 &&
+		bytes[10] === 0x42 &&
+		bytes[11] === 0x50
+	) {
+		detected = 'image/webp';
+	}
+
+	if (!detected) {
+		throw new HttpError(400, 'bad_request', 'File content does not match the declared image type.');
+	}
+	if (detected !== mime) {
+		throw new HttpError(
+			400,
+			'bad_request',
+			`File content is ${detected} but the declared type is ${mime}.`
+		);
+	}
+}
+
 export async function bufferFromUpload(file: File): Promise<Buffer> {
 	const bytes = Buffer.from(await file.arrayBuffer());
 	assertPermittedAttachment(file.type, bytes.byteLength);
+	assertMagicBytesMatch(bytes, file.type);
 	return bytes;
 }
 

@@ -8,15 +8,33 @@ import {
 	requireUser,
 	setSessionCookie
 } from '../auth/session.ts';
-import { verifyPassword } from '../auth/passwords.ts';
+import { hashPassword, verifyPassword } from '../auth/passwords.ts';
 import { findUserByEmail } from '../db/queries.ts';
 import { toPublicUser } from '../db/map.ts';
 import { HttpError } from '../http/errors.ts';
+import { RateLimiter } from '../http/rate-limit.ts';
+import { audit } from '../http/audit.ts';
+
+/** Max 10 failed login attempts per IP per 15-minute window. */
+const loginLimiter = new RateLimiter({ max: 10, windowMs: 15 * 60 * 1000 });
+
+function clientIp(c: { req: { header(name: string): string | undefined } }): string {
+	return c.req.header('x-forwarded-for')?.split(',')[0]?.trim() ?? '127.0.0.1';
+}
 
 export const authRoutes = new Hono<AppEnv>();
 
 authRoutes.post('/login', async (c) => {
 	const db = c.get('db');
+	const ip = clientIp(c);
+
+	// Rate-limit failed login attempts per IP.
+	const check = loginLimiter.touch(ip);
+	if (check.limited) {
+		audit({ ts: new Date().toISOString(), event: 'login_rate_limited', ip });
+		throw new HttpError(429, 'too_many_requests', 'Too many login attempts. Please try again later.');
+	}
+
 	let body: unknown;
 	try {
 		body = await c.req.json();
@@ -32,20 +50,33 @@ authRoutes.post('/login', async (c) => {
 		throw new HttpError(400, 'bad_request', 'Email and password are required.');
 	}
 	const user = findUserByEmail(db, email);
-	if (!user || !verifyPassword(password, user.password_hash)) {
+	if (!user) {
+		audit({ ts: new Date().toISOString(), event: 'login_failure', ip, detail: email });
 		throw new HttpError(401, 'unauthenticated', 'Invalid email or password.');
+	}
+	const result = verifyPassword(password, user.password_hash);
+	if (!result.ok) {
+		audit({ ts: new Date().toISOString(), event: 'login_failure', userId: user.id, ip, detail: email });
+		throw new HttpError(401, 'unauthenticated', 'Invalid email or password.');
+	}
+	// Successful login — reset the rate limiter for this IP.
+	loginLimiter.reset(ip);
+	audit({ ts: new Date().toISOString(), event: 'login_success', userId: user.id, ip });
+	// Upgrade legacy sha256 hashes to scrypt on successful login.
+	if (result.needsMigration) {
+		const freshHash = hashPassword(password);
+		db.prepare('UPDATE users SET password_hash = ? WHERE id = ?').run(freshHash, user.id);
 	}
 	const token = createSession(db, user.id);
 	setSessionCookie(c, token);
 	return c.json({ user: toPublicUser(user) });
-});
-
-authRoutes.post('/logout', (c) => {
+});	authRoutes.post('/logout', (c) => {
 	const token = optionalToken(c);
 	if (token) {
 		// Clearing the cookie alone leaves the session usable by anyone who still
 		// holds the token, so the server-side record has to go too.
 		destroySession(c.get('db'), token);
+		audit({ ts: new Date().toISOString(), event: 'logout' });
 	}
 	clearSessionCookie(c);
 	return c.json({ ok: true });
